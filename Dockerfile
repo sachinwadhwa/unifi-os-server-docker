@@ -10,11 +10,11 @@
 FROM ubuntu:22.04 AS extractor
 
 ARG TARGETARCH
-ARG INSTALLER_URL_AMD64="https://fw-download.ubnt.com/data/unifi-os-server/1856-linux-x64-5.0.6-33f4990f-6c68-4e72-9d9c-477496c22450.6-x64"
-ARG INSTALLER_URL_ARM64="https://fw-download.ubnt.com/data/unifi-os-server/df5b-linux-arm64-5.0.6-f35e944c-f4b6-4190-93a8-be61b96c58f4.6-arm64"
+ARG INSTALLER_URL_AMD64="https://fw-download.ubnt.com/data/unifi-os-server/5172-linux-x64-5.1.42-12e9e3cf-8f8b-4e54-928c-76b80a10c8a4.42-x64"
+ARG INSTALLER_URL_ARM64="https://fw-download.ubnt.com/data/unifi-os-server/f730-linux-arm64-5.1.42-d2bca8bd-d6fc-4d20-99e5-b78235843c2f.42-arm64"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        binwalk jq p7zip-full curl ca-certificates \
+        binwalk jq p7zip-full curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -59,6 +59,53 @@ while read -r layer; do
 done
 EXTRACT
 
+# Temporary Node2Shell (CVE-2026-111497) fix until Ubiquiti updates node24.
+# Replace the executable used by systemd, preserving Node 24's native addon ABI.
+# SHA-256 values are pinned from https://nodejs.org/dist/v24.22.1/SHASUMS256.txt.
+RUN /bin/bash <<'PATCH_NODE'
+set -euo pipefail
+
+VERSION=24.22.1
+case "$TARGETARCH" in
+    amd64)
+        NODE_ARCH=x64
+        SHA256=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
+        ;;
+    arm64)
+        NODE_ARCH=arm64
+        SHA256=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e
+        ;;
+    *) echo "Unsupported Node.js architecture: $TARGETARCH" >&2; exit 1 ;;
+esac
+
+# Fail if an upstream installer changes the runtime layout or major version.
+test -f /rootfs/usr/bin/node24
+test ! -L /rootfs/usr/bin/node24
+OLD_VERSION=$(chroot /rootfs /usr/bin/node24 -p 'process.versions.node')
+test "${OLD_VERSION%%.*}" = 24
+OLD_ABI=$(chroot /rootfs /usr/bin/node24 -p 'process.versions.modules')
+
+ARCHIVE="node-v${VERSION}-linux-${NODE_ARCH}.tar.xz"
+curl -fL --retry 5 --retry-delay 2 -o "$ARCHIVE" "https://nodejs.org/dist/v${VERSION}/${ARCHIVE}"
+echo "$SHA256  $ARCHIVE" | sha256sum -c -
+mkdir -p /build/node-patch
+tar -xJf "$ARCHIVE" -C /build/node-patch --strip-components=1 \
+    "node-v${VERSION}-linux-${NODE_ARCH}/bin/node" \
+    "node-v${VERSION}-linux-${NODE_ARCH}/LICENSE"
+install -m 0755 /build/node-patch/bin/node /rootfs/usr/bin/node24
+install -Dm 0644 /build/node-patch/LICENSE /rootfs/usr/share/doc/node24/LICENSE
+
+test "$(chroot /rootfs /usr/bin/node24 --version)" = "v${VERSION}"
+test "$(chroot /rootfs /usr/bin/node24 -p 'process.versions.modules')" = "$OLD_ABI"
+chroot /rootfs /usr/bin/node24 --openssl-legacy-provider -e '
+    const assert = require("node:assert/strict");
+    const zlib = require("node:zlib");
+    const input = Buffer.from("UniFi Node.js runtime smoke test");
+    assert.deepEqual(zlib.brotliDecompressSync(zlib.brotliCompressSync(input)), input);
+'
+rm -rf /build/node-patch "$ARCHIVE"
+PATCH_NODE
+
 COPY uos-entrypoint.sh /rootfs/root/uos-entrypoint.sh
 RUN chmod +x /rootfs/root/uos-entrypoint.sh
 
@@ -69,7 +116,7 @@ FROM scratch
 
 COPY --from=extractor /rootfs /
 
-ARG UOS_SERVER_VERSION="5.0.6"
+ARG UOS_SERVER_VERSION="5.1.42"
 
 ENV UOS_SERVER_VERSION="${UOS_SERVER_VERSION}" \
     APP_VERSION="${UOS_SERVER_VERSION}" \

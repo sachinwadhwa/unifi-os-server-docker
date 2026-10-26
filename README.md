@@ -76,6 +76,12 @@ By default the internal mongod is removed and the container expects a separate M
 
 One of the nice things about this project is that the build is fully transparent: nothing happens behind a curtain. We download the official Ubiquiti UOS installer, extract the embedded OCI image from it, and flatten its layers into a rootfs that Docker can consume. In other words, we're not distributing or re-distributing any Ubiquiti code; we're taking an OCI image that Ubiquiti already built and making it runnable outside their installer. Our own entrypoint is layered on top, and at runtime it configures MongoDB, wires up networking (macvlan `eth0` alias), exposes PostgreSQL, and hands off to systemd. The entire pipeline runs through the [`build-image`](.github/workflows/build-image.yml) GitHub Action, so you can inspect exactly what happens at every step.
 
+## Node.js security patch
+
+The image replaces Ubiquiti's `/usr/bin/node24` with the official Node.js **24.22.1** binary on amd64 and arm64 to address [Node2Shell (CVE-2026-111497)](https://nodejs.org/en/blog/release/v24.22.1/). This is the executable used by UniFi Core's systemd service. Downloads are checked against pinned SHA-256 hashes, and the build verifies the version, native addon ABI, and Brotli compression/decompression inside the extracted rootfs.
+
+This is a temporary runtime override until Ubiquiti ships a fixed package. The Debian `node24` package metadata still reports Ubiquiti's original version; check the running binary with `docker exec unifi-os-server /usr/bin/node24 --version`. An in-container package update can overwrite the patched binary, so deploy rebuilt images to retain the fix. When updating the patch, change the version and both architecture hashes together in `Dockerfile`.
+
 ---
 
 This project is not affiliated with, endorsed by, or supported by Ubiquiti Inc. All trademarks and copyrights belong to their respective owners.
