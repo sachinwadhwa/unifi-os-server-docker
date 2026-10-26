@@ -184,33 +184,48 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. PostgreSQL — expose on all interfaces for Docker port mapping
+# 6. PostgreSQL — internal vs. external
 # ---------------------------------------------------------------------------
 
-# listen_addresses requires a restart (reload is not enough).
-(
-    PG_CONF="/etc/postgresql/14/main/postgresql.conf"
-    PG_HBA="/etc/postgresql/14/main/pg_hba.conf"
+POSTGRES_INTERNAL="${POSTGRES_INTERNAL:-true}"
 
-    log "PostgreSQL exposure worker started"
-    while [ ! -f "$PG_CONF" ]; do sleep 5; done
+if [ "$POSTGRES_INTERNAL" = "false" ]; then
+    POSTGRES_HOST="${POSTGRES_HOST:?POSTGRES_HOST is required when POSTGRES_INTERNAL=false}"
+    POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 
-    if grep -q "^#\?listen_addresses" "$PG_CONF"; then
-        sed -i "s/^#\?listen_addresses.*/listen_addresses = '*' /" "$PG_CONF"
-    else
-        echo "listen_addresses = '*'" >> "$PG_CONF"
-    fi
+    log "Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
 
-    if ! grep -q "^host all all 0.0.0.0/0" "$PG_HBA" 2>/dev/null; then
-        echo "host all all 0.0.0.0/0 trust" >> "$PG_HBA"
-    fi
+    # Prevent the bundled PostgreSQL instance from starting.
+    rm -f /etc/systemd/system/multi-user.target.wants/postgresql.service
+    rm -f /etc/systemd/system/multi-user.target.wants/postgresql@14-main.service
 
-    # Wait for systemd to be up, then restart PostgreSQL to pick up listen_addresses
-    while ! systemctl is-system-running 2>/dev/null | grep -qE "running|degraded"; do sleep 2; done
-    systemctl restart postgresql@14-main 2>/dev/null || systemctl restart postgresql 2>/dev/null || true
+    # Prevent the local cluster from starting if its service is invoked.
+    systemctl disable postgresql.service 2>/dev/null || true
+    systemctl disable postgresql@14-main.service 2>/dev/null || true
 
-    log "PostgreSQL: exposed on port 5432"
-) &
+else
+    log "Using bundled PostgreSQL"
+
+    (
+        PG_CONF="/etc/postgresql/14/main/postgresql.conf"
+
+        while [ ! -f "$PG_CONF" ]; do sleep 5; done
+
+        # Keep the bundled database accessible only within the container.
+        sed -i "s/^#\?listen_addresses.*/listen_addresses = 'localhost'/" \
+            "$PG_CONF"
+
+        while ! systemctl is-system-running 2>/dev/null |
+            grep -qE "running|degraded"; do
+            sleep 2
+        done
+
+        systemctl restart postgresql@14-main 2>/dev/null ||
+            systemctl restart postgresql 2>/dev/null || true
+
+        log "Bundled PostgreSQL configured"
+    ) &
+fi
 
 # ---------------------------------------------------------------------------
 # 7. Journal forwarding & systemd
