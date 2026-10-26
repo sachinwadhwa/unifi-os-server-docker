@@ -42,6 +42,16 @@ services:
       UOS_SYSTEM_IP: "127.0.0.1"
       MONGO_INTERNAL: "false" # Defaults to false → uses the external MongoDB service below.
 
+      # Use "true" for the bundled database.
+      POSTGRES_INTERNAL: "${POSTGRES_INTERNAL:-true}"
+      
+      # External PostgreSQL connection
+      POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      POSTGRES_DB: "${POSTGRES_DB:-unifi}"
+      POSTGRES_USER: "${POSTGRES_USER:-unifi}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}"
+      
   unifi-os-server-mongodb:
     container_name: unifi-os-server-mongodb
     image: mongo:4.4
