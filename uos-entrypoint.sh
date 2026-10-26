@@ -190,31 +190,55 @@ fi
 POSTGRES_INTERNAL="${POSTGRES_INTERNAL:-true}"
 
 if [ "$POSTGRES_INTERNAL" = "false" ]; then
-    POSTGRES_HOST="${POSTGRES_HOST:?POSTGRES_HOST is required when POSTGRES_INTERNAL=false}"
+    # External PostgreSQL connection settings.
+    : "${POSTGRES_HOST:?ERROR: POSTGRES_HOST is required when POSTGRES_INTERNAL=false}"
+    : "${POSTGRES_DB:?ERROR: POSTGRES_DB is required when POSTGRES_INTERNAL=false}"
+    : "${POSTGRES_USER:?ERROR: POSTGRES_USER is required when POSTGRES_INTERNAL=false}"
+    : "${POSTGRES_PASSWORD:?ERROR: POSTGRES_PASSWORD is required when POSTGRES_INTERNAL=false}"
+
     POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 
     log "Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
 
-    # Prevent the bundled PostgreSQL instance from starting.
+    # Export standard libpq environment variables for clients that support them.
+    export PGHOST="$POSTGRES_HOST"
+    export PGPORT="$POSTGRES_PORT"
+    export PGDATABASE="$POSTGRES_DB"
+    export PGUSER="$POSTGRES_USER"
+    export PGPASSWORD="$POSTGRES_PASSWORD"
+
+    # Do not expose or start the bundled PostgreSQL service.
     rm -f /etc/systemd/system/multi-user.target.wants/postgresql.service
     rm -f /etc/systemd/system/multi-user.target.wants/postgresql@14-main.service
 
-    # Prevent the local cluster from starting if its service is invoked.
     systemctl disable postgresql.service 2>/dev/null || true
     systemctl disable postgresql@14-main.service 2>/dev/null || true
 
+    log "External PostgreSQL environment configured"
+
 else
+    # Preserve the existing bundled PostgreSQL behaviour.
     log "Using bundled PostgreSQL"
 
     (
         PG_CONF="/etc/postgresql/14/main/postgresql.conf"
 
-        while [ ! -f "$PG_CONF" ]; do sleep 5; done
+        log "PostgreSQL configuration worker started"
 
-        # Keep the bundled database accessible only within the container.
-        sed -i "s/^#\?listen_addresses.*/listen_addresses = 'localhost'/" \
-            "$PG_CONF"
+        while [ ! -f "$PG_CONF" ]; do
+            sleep 5
+        done
 
+        # Listen only on loopback; do not expose PostgreSQL on all interfaces.
+        if grep -q "^#\?listen_addresses" "$PG_CONF"; then
+            sed -i \
+                "s/^#\?listen_addresses.*/listen_addresses = 'localhost'/" \
+                "$PG_CONF"
+        else
+            echo "listen_addresses = 'localhost'" >> "$PG_CONF"
+        fi
+
+        # Wait for systemd before restarting PostgreSQL.
         while ! systemctl is-system-running 2>/dev/null |
             grep -qE "running|degraded"; do
             sleep 2
@@ -223,7 +247,7 @@ else
         systemctl restart postgresql@14-main 2>/dev/null ||
             systemctl restart postgresql 2>/dev/null || true
 
-        log "Bundled PostgreSQL configured"
+        log "Bundled PostgreSQL configured for localhost"
     ) &
 fi
 
